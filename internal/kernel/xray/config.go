@@ -699,7 +699,7 @@ func compilePanelRouteRule(rule model.RouteRule) []M {
 		if item == "" {
 			continue
 		}
-		if strings.HasPrefix(item, "geoip:") || strings.Contains(item, "/") {
+		if strings.HasPrefix(item, "geoip:") {
 			match.IPCIDRs = append(match.IPCIDRs, item)
 			continue
 		}
@@ -707,7 +707,14 @@ func compilePanelRouteRule(rule model.RouteRule) []M {
 			match.Domains = append(match.Domains, item)
 			continue
 		}
-		match.DomainSuffixes = append(match.DomainSuffixes, strings.TrimPrefix(item, "*."))
+		value, isCIDR := model.ClassifyRouteMatch(strings.TrimPrefix(item, "*."))
+		if isCIDR {
+			match.IPCIDRs = append(match.IPCIDRs, value)
+			continue
+		}
+		if value != "" {
+			match.DomainSuffixes = append(match.DomainSuffixes, value)
+		}
 	}
 	action := model.RouteAction{Type: "block"}
 	switch rule.Action {

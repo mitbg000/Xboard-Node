@@ -207,11 +207,14 @@ func compilePanelRouteRule(pr model.RouteRule) []M {
 			continue
 		}
 		item = strings.TrimPrefix(item, "*.")
-		if strings.Contains(item, "/") {
-			cidrs = append(cidrs, item)
+		value, isCIDR := model.ClassifyRouteMatch(item)
+		if isCIDR {
+			cidrs = append(cidrs, value)
 			continue
 		}
-		domains = append(domains, item)
+		if value != "" {
+			domains = append(domains, value)
+		}
 	}
 
 	outbound := "block"
