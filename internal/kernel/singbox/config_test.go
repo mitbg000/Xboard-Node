@@ -887,3 +887,18 @@ func TestExtractECHInbound(t *testing.T) {
 		})
 	}
 }
+
+func TestOutboundConfigToSingboxFlattensXraySocksServers(t *testing.T) {
+	got := outboundConfigToSingbox(model.OutboundConfig{
+		Tag:      "socks",
+		Protocol: "socks",
+		Settings: map[string]any{"servers": []any{map[string]any{
+			"address": "1.2.3.4", "port": float64(1080),
+			"users": []any{map[string]any{"user": "u", "pass": "p"}},
+		}}},
+	})
+	want := M{"type": "socks", "tag": "socks", "version": "5", "server": "1.2.3.4", "server_port": float64(1080), "username": "u", "password": "p"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %#v, want %#v", got, want)
+	}
+}

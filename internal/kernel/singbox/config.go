@@ -125,6 +125,28 @@ func outboundConfigToSingbox(oc model.OutboundConfig) M {
 				m[k] = v
 			}
 		}
+	} else if (oc.Protocol == "socks" || oc.Protocol == "http") && oc.Settings["servers"] != nil {
+		// Xray layout: servers[0] {address, port, users[0] {user, pass}} -> sing-box flat server fields
+		if servers, ok := oc.Settings["servers"].([]any); ok && len(servers) > 0 {
+			if srv, ok := servers[0].(map[string]any); ok {
+				m["server"] = srv["address"]
+				m["server_port"] = srv["port"]
+				if users, ok := srv["users"].([]any); ok && len(users) > 0 {
+					if u, ok := users[0].(map[string]any); ok {
+						m["username"] = u["user"]
+						m["password"] = u["pass"]
+					}
+				}
+			}
+		}
+		if oc.Protocol == "socks" {
+			m["version"] = "5"
+		}
+		for k, v := range oc.Settings {
+			if k != "servers" {
+				m[k] = v
+			}
+		}
 	} else {
 		for k, v := range oc.Settings {
 			m[k] = v
