@@ -1325,7 +1325,7 @@ func runConfigInit(args []string) error {
 		Panel: config.PanelConfig{URL: panelURL},
 		Kernel: config.KernelConfig{
 			Type:     kernelType,
-			LogLevel: "warn",
+			LogLevel: "info",
 		},
 		Log:        config.LogConfig{Level: "info", Output: "stdout"},
 		HealthPort: healthPort,

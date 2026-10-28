@@ -564,7 +564,8 @@ func (c *Config) setDefaultsFrom(baseDir string) {
 		c.Kernel.GeoDataDir = c.Kernel.ConfigDir
 	}
 	if c.Kernel.LogLevel == "" {
-		c.Kernel.LogLevel = "warn"
+		// info logs each connection as "[user uuid] inbound connection to <destination>"
+		c.Kernel.LogLevel = "info"
 	}
 	if c.Log.Level == "" {
 		c.Log.Level = "info"

@@ -73,8 +73,8 @@ panel:
 	if cfg.Kernel.ConfigDir != expectedDir {
 		t.Errorf("default config_dir: got %q, want %q", cfg.Kernel.ConfigDir, expectedDir)
 	}
-	if cfg.Kernel.LogLevel != "warn" {
-		t.Errorf("default kernel log_level: got %q, want warn", cfg.Kernel.LogLevel)
+	if cfg.Kernel.LogLevel != "info" {
+		t.Errorf("default kernel log_level: got %q, want info", cfg.Kernel.LogLevel)
 	}
 	if cfg.Log.Level != "info" {
 		t.Errorf("default log.level: got %q, want info", cfg.Log.Level)
