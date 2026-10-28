@@ -4,43 +4,42 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/cedar2025/xboard-node/internal/config"
 	panelapi "github.com/cedar2025/xboard-node/internal/panel"
 )
 
-func TestPanelControlPlaneInitialRejectsInvalidCustomOutbounds(t *testing.T) {
+func TestPanelControlPlaneInitialDropsInvalidCustomOutbounds(t *testing.T) {
 	server := newPanelTestServer(`{"protocol":"shadowsocks","server_port":8388,"custom_outbounds":[{"tag":"proxy","protocol":"socks","proxy_tag":"missing","settings":{"server":"2.2.2.2","server_port":1080}}]}`)
 	defer server.Close()
 
 	cp := NewPanelControlPlane(config.PanelConfig{URL: server.URL, Token: "token", NodeID: 1}, config.WSConfig{}, config.KernelConfig{Type: "singbox"})
-	_, err := cp.Initial(context.Background(), nil, nil, nil)
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	bootstrap, err := cp.Initial(context.Background(), nil, nil, nil)
+	if err != nil {
+		t.Fatalf("expected the invalid outbound to be dropped, got %v", err)
 	}
-	if !strings.Contains(err.Error(), `initial config normalize: validate custom outbounds: custom_outbounds[0].proxy_tag references unknown outbound "missing"`) {
-		t.Fatalf("unexpected error: %v", err)
+	if bootstrap.Config == nil || len(bootstrap.Config.CustomOutbounds) != 0 {
+		t.Fatalf("expected no custom outbounds, got %#v", bootstrap.Config)
 	}
 }
 
-func TestPanelControlPlanePollRejectsInvalidCustomOutbounds(t *testing.T) {
+func TestPanelControlPlanePollDropsInvalidCustomOutbounds(t *testing.T) {
 	server := newPanelTestServer(`{"protocol":"shadowsocks","server_port":8388,"custom_outbounds":[{"tag":"proxy","protocol":"socks","proxy_tag":"missing","settings":{"server":"2.2.2.2","server_port":1080}}]}`)
 	defer server.Close()
 
 	cp := NewPanelControlPlane(config.PanelConfig{URL: server.URL, Token: "token", NodeID: 1}, config.WSConfig{}, config.KernelConfig{Type: "singbox"})
-	_, err := cp.Poll(context.Background())
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	snapshot, err := cp.Poll(context.Background())
+	if err != nil {
+		t.Fatalf("expected the invalid outbound to be dropped, got %v", err)
 	}
-	if !strings.Contains(err.Error(), `poll config normalize: validate custom outbounds: custom_outbounds[0].proxy_tag references unknown outbound "missing"`) {
-		t.Fatalf("unexpected error: %v", err)
+	if snapshot.Config == nil || len(snapshot.Config.CustomOutbounds) != 0 {
+		t.Fatalf("expected no custom outbounds, got %#v", snapshot.Config)
 	}
 }
 
-func TestTranslateWSEventRejectsInvalidCustomOutbounds(t *testing.T) {
-	_, err := TranslateWSEvent(panelapi.WSEvent{
+func TestTranslateWSEventDropsInvalidCustomOutbounds(t *testing.T) {
+	event, err := TranslateWSEvent(panelapi.WSEvent{
 		Type: panelapi.WSEventSyncConfig,
 		Config: &panelapi.NodeConfig{
 			Protocol:   "shadowsocks",
@@ -50,11 +49,11 @@ func TestTranslateWSEventRejectsInvalidCustomOutbounds(t *testing.T) {
 			},
 		},
 	}, config.KernelConfig{Type: "singbox"})
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	if err != nil {
+		t.Fatalf("expected the invalid outbound to be dropped, got %v", err)
 	}
-	if !strings.Contains(err.Error(), `translate node config: validate custom outbounds: custom_outbounds[0].proxy_tag references unknown outbound "missing"`) {
-		t.Fatalf("unexpected error: %v", err)
+	if event.Config == nil || len(event.Config.CustomOutbounds) != 0 {
+		t.Fatalf("expected no custom outbounds, got %#v", event.Config)
 	}
 }
 
@@ -75,8 +74,8 @@ func newPanelTestServer(configBody string) *httptest.Server {
 	return httptest.NewServer(mux)
 }
 
-func TestTranslateWSEventRejectsUnsupportedProtocolForKernel(t *testing.T) {
-	_, err := TranslateWSEvent(panelapi.WSEvent{
+func TestTranslateWSEventDropsUnsupportedProtocolForKernel(t *testing.T) {
+	event, err := TranslateWSEvent(panelapi.WSEvent{
 		Type: panelapi.WSEventSyncConfig,
 		Config: &panelapi.NodeConfig{
 			Protocol:   "shadowsocks",
@@ -86,10 +85,10 @@ func TestTranslateWSEventRejectsUnsupportedProtocolForKernel(t *testing.T) {
 			},
 		},
 	}, config.KernelConfig{Type: "xray"})
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	if err != nil {
+		t.Fatalf("expected the unsupported outbound to be dropped, got %v", err)
 	}
-	if !strings.Contains(err.Error(), `translate node config: validate custom outbounds: custom_outbounds[0].protocol "hysteria2" is not supported by kernel "xray"`) {
-		t.Fatalf("unexpected error: %v", err)
+	if event.Config == nil || len(event.Config.CustomOutbounds) != 0 {
+		t.Fatalf("expected no custom outbounds, got %#v", event.Config)
 	}
 }

@@ -25,10 +25,12 @@ func ValidateNodeSpec(n *NodeSpec, kcfg config.KernelConfig) error {
 	if err != nil {
 		return fmt.Errorf("collect additional outbound tags: %w", err)
 	}
+	additionalTags := additionalTagNames(additionalOutboundSources)
+	// A broken panel outbound or rule only disables itself, never the whole node
+	pruneInvalidCustomConfig(n, kernelType, additionalOutboundSources, additionalTags)
 	if err := validateOutboundTagCollisions(n.CustomOutbounds, additionalOutboundSources); err != nil {
 		return fmt.Errorf("validate outbound tags: %w", err)
 	}
-	additionalTags := additionalTagNames(additionalOutboundSources)
 	availableTags := buildAvailableOutboundTags(n.CustomOutbounds, additionalTags)
 	if err := ValidateCustomOutboundsForKernel(n.CustomOutbounds, kernelType, additionalTags); err != nil {
 		return fmt.Errorf("validate custom outbounds: %w", err)

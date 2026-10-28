@@ -36,14 +36,14 @@ func TestNodeSpecFromPanelValidated_AllowsTargetsFromCustomConfigOutbounds(t *te
 	}
 }
 
-func TestNodeSpecFromPanelValidated_RejectsDuplicateTagsAcrossSources(t *testing.T) {
+func TestNodeSpecFromPanelValidated_DropsDuplicateTagsAcrossSources(t *testing.T) {
 	dir := t.TempDir()
 	customConfigPath := filepath.Join(dir, "custom.yaml")
 	if err := os.WriteFile(customConfigPath, []byte("outbounds:\n  - tag: warp\n    protocol: wireguard\n"), 0o644); err != nil {
 		t.Fatalf("write custom config: %v", err)
 	}
 
-	_, err := NodeSpecFromPanelValidated(&panel.NodeConfig{
+	node, err := NodeSpecFromPanelValidated(&panel.NodeConfig{
 		Protocol:   "shadowsocks",
 		ServerPort: 8388,
 		CustomOutbounds: []panel.OutboundConfig{{
@@ -59,11 +59,11 @@ func TestNodeSpecFromPanelValidated_RejectsDuplicateTagsAcrossSources(t *testing
 			"protocol": "socks",
 		}},
 	})
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	if err != nil {
+		t.Fatalf("expected the colliding panel outbound to be dropped, got %v", err)
 	}
-	if !strings.Contains(err.Error(), `custom_outbounds[0].tag duplicates "warp" from kernel.custom_config.outbounds[0]`) {
-		t.Fatalf("unexpected error: %v", err)
+	if len(node.CustomOutbounds) != 0 {
+		t.Fatalf("expected no panel outbounds, got %#v", node.CustomOutbounds)
 	}
 }
 

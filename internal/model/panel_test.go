@@ -1,7 +1,6 @@
 package model
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/cedar2025/xboard-node/internal/config"
@@ -30,40 +29,64 @@ func TestNodeSpecFromPanelValidated(t *testing.T) {
 		}
 	})
 
-	t.Run("invalid custom outbounds", func(t *testing.T) {
-		_, err := NodeSpecFromPanelValidated(&panel.NodeConfig{
+	t.Run("drops outbound chained to a missing outbound", func(t *testing.T) {
+		node, err := NodeSpecFromPanelValidated(&panel.NodeConfig{
 			Protocol:   "shadowsocks",
 			ServerPort: 8388,
 			CustomOutbounds: []panel.OutboundConfig{{
 				Tag: "proxy", Protocol: "socks", ProxyTag: "missing", Settings: map[string]any{"server": "2.2.2.2", "server_port": 1080},
 			}},
 		}, config.KernelConfig{Type: "singbox"})
-		if err == nil {
-			t.Fatal("expected error, got nil")
+		if err != nil {
+			t.Fatalf("expected the invalid outbound to be dropped, got %v", err)
 		}
-		if !strings.Contains(err.Error(), `custom_outbounds[0].proxy_tag references unknown outbound "missing"`) {
-			t.Fatalf("unexpected error: %v", err)
+		if len(node.CustomOutbounds) != 0 {
+			t.Fatalf("expected no outbounds, got %#v", node.CustomOutbounds)
 		}
 	})
 
-	t.Run("reject unsupported protocol for kernel", func(t *testing.T) {
-		_, err := NodeSpecFromPanelValidated(&panel.NodeConfig{
+	t.Run("drops outbound without settings and rules routing to it", func(t *testing.T) {
+		node, err := NodeSpecFromPanelValidated(&panel.NodeConfig{
+			Protocol:   "shadowsocks",
+			ServerPort: 8388,
+			CustomOutbounds: []panel.OutboundConfig{
+				{Tag: "socks", Protocol: "socks"},
+				{Tag: "warp", Protocol: "wireguard", Settings: map[string]any{"server": "1.1.1.1", "server_port": 2408, "private_key": "pk"}},
+			},
+			CustomRouteRules: []panel.CustomRouteRule{
+				{Action: panel.RouteAction{Type: "route", Target: "socks"}, Match: panel.RouteMatch{DomainSuffixes: []string{"instagram.com"}}},
+				{Action: panel.RouteAction{Type: "route", Target: "warp"}, Match: panel.RouteMatch{DomainSuffixes: []string{"example.com"}}},
+			},
+		}, config.KernelConfig{Type: "singbox"})
+		if err != nil {
+			t.Fatalf("expected the invalid outbound to be dropped, got %v", err)
+		}
+		if len(node.CustomOutbounds) != 1 || node.CustomOutbounds[0].Tag != "warp" {
+			t.Fatalf("expected only warp to remain, got %#v", node.CustomOutbounds)
+		}
+		if len(node.CustomRouteRules) != 1 || node.CustomRouteRules[0].Action.Target != "warp" {
+			t.Fatalf("expected only the warp rule to remain, got %#v", node.CustomRouteRules)
+		}
+	})
+
+	t.Run("drops protocol unsupported by kernel", func(t *testing.T) {
+		node, err := NodeSpecFromPanelValidated(&panel.NodeConfig{
 			Protocol:   "shadowsocks",
 			ServerPort: 8388,
 			CustomOutbounds: []panel.OutboundConfig{{
 				Tag: "hy2", Protocol: "hysteria2", Settings: map[string]any{"server": "2.2.2.2", "server_port": 8443},
 			}},
 		}, config.KernelConfig{Type: "xray"})
-		if err == nil {
-			t.Fatal("expected error, got nil")
+		if err != nil {
+			t.Fatalf("expected the unsupported outbound to be dropped, got %v", err)
 		}
-		if !strings.Contains(err.Error(), `protocol "hysteria2" is not supported by kernel "xray"`) {
-			t.Fatalf("unexpected error: %v", err)
+		if len(node.CustomOutbounds) != 0 {
+			t.Fatalf("expected no outbounds, got %#v", node.CustomOutbounds)
 		}
 	})
 
-	t.Run("reject unknown route target", func(t *testing.T) {
-		_, err := NodeSpecFromPanelValidated(&panel.NodeConfig{
+	t.Run("drops rule with unknown route target", func(t *testing.T) {
+		node, err := NodeSpecFromPanelValidated(&panel.NodeConfig{
 			Protocol:   "shadowsocks",
 			ServerPort: 8388,
 			CustomOutbounds: []panel.OutboundConfig{{
@@ -74,11 +97,11 @@ func TestNodeSpecFromPanelValidated(t *testing.T) {
 				Match:  panel.RouteMatch{DomainSuffixes: []string{"example.com"}},
 			}},
 		}, config.KernelConfig{Type: "singbox"})
-		if err == nil {
-			t.Fatal("expected error, got nil")
+		if err != nil {
+			t.Fatalf("expected the rule to be dropped, got %v", err)
 		}
-		if !strings.Contains(err.Error(), `custom_route_rules[0].action.target references unknown outbound "missing"`) {
-			t.Fatalf("unexpected error: %v", err)
+		if len(node.CustomOutbounds) != 1 || len(node.CustomRouteRules) != 0 {
+			t.Fatalf("expected the outbound kept and the rule dropped, got %#v", node)
 		}
 	})
 }
