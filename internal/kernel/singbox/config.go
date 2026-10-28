@@ -51,6 +51,7 @@ func buildConfig(kcfg config.KernelConfig, nc *model.NodeSpec, users []model.Use
 			"timestamp": true,
 		},
 		"outbounds": outbounds,
+		"dns":       M{"servers": []any{M{"type": "local", "tag": localDNSTag}}},
 	}
 
 	inbound := buildInbound(nc, users, tc)
@@ -60,6 +61,10 @@ func buildConfig(kcfg config.KernelConfig, nc *model.NodeSpec, users []model.Use
 
 	// Merge panel routes and static config routes
 	cfg["route"] = buildRoutes(nc.Routes, nc.CustomRouteRules, mergeRouteList(nc.CustomRoutes, kcfg.CustomRoute))
+	// Resolve domains IPv4-first (like soga's default dns_strategy=ipv4_first) for every outbound
+	// without its own domain_resolver: on a VPS whose IPv6 route exists but does not work, dialing
+	// dual-stack destinations over IPv6 first only times out.
+	cfg["route"].(M)["default_domain_resolver"] = M{"server": localDNSTag, "strategy": "prefer_ipv4"}
 
 	// Automatically enable rule_set caching (cache_file) when panel routes
 	// reference geoip:/geosite: entries so that the downloaded .srs rule_set
@@ -74,7 +79,27 @@ func buildConfig(kcfg config.KernelConfig, nc *model.NodeSpec, users []model.Use
 	}
 
 	mergeCustomSingbox(cfg, kcfg)
+	ensureLocalDNSServer(cfg)
 	return cfg
+}
+
+const localDNSTag = "local"
+
+// ensureLocalDNSServer keeps the "local" DNS server that the default domain
+// resolver uses, also when a custom config replaced the dns section.
+func ensureLocalDNSServer(cfg M) {
+	dns, ok := cfg["dns"].(M)
+	if !ok {
+		dns = M{}
+		cfg["dns"] = dns
+	}
+	servers, _ := dns["servers"].([]any)
+	for _, srv := range servers {
+		if m, ok := srv.(M); ok && m["tag"] == localDNSTag {
+			return
+		}
+	}
+	dns["servers"] = append(servers, M{"type": "local", "tag": localDNSTag})
 }
 
 // outboundConfigToSingbox converts a structured OutboundConfig (from the panel)

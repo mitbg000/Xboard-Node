@@ -1,6 +1,7 @@
 package singbox
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
 	"testing"
@@ -9,6 +10,10 @@ import (
 	"github.com/cedar2025/xboard-node/internal/kernel"
 	"github.com/cedar2025/xboard-node/internal/model"
 	"github.com/cedar2025/xboard-node/internal/panel"
+	box "github.com/sagernet/sing-box"
+	"github.com/sagernet/sing-box/include"
+	"github.com/sagernet/sing-box/option"
+	singJSON "github.com/sagernet/sing/common/json"
 )
 
 var testUsersPanel = []panel.User{
@@ -901,4 +906,38 @@ func TestOutboundConfigToSingboxFlattensXraySocksServers(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %#v, want %#v", got, want)
 	}
+}
+
+func TestBuildConfigResolvesIPv4FirstAndSingboxAcceptsIt(t *testing.T) {
+	nc := &panel.NodeConfig{
+		Protocol:   "shadowsocks",
+		ServerPort: 18388,
+		Cipher:     "aes-128-gcm",
+		CustomOutbounds: []panel.OutboundConfig{{
+			Tag: "socks", Protocol: "socks",
+			Settings: map[string]any{"servers": []any{map[string]any{"address": "proxy.example.com", "port": float64(1080)}}},
+		}},
+	}
+	cfg := buildConfig(config.KernelConfig{LogLevel: "info"}, testNodeSpec(nc), testUsers, kernel.TLSCert{})
+
+	route := cfg["route"].(M)
+	if !reflect.DeepEqual(route["default_domain_resolver"], M{"server": "local", "strategy": "prefer_ipv4"}) {
+		t.Fatalf("default_domain_resolver: got %#v", route["default_domain_resolver"])
+	}
+
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	ctx, cancel := context.WithCancel(include.Context(context.Background()))
+	defer cancel()
+	opts, err := singJSON.UnmarshalExtendedContext[option.Options](ctx, data)
+	if err != nil {
+		t.Fatalf("parse sing-box options: %v", err)
+	}
+	instance, err := box.New(box.Options{Context: ctx, Options: opts})
+	if err != nil {
+		t.Fatalf("create sing-box instance: %v", err)
+	}
+	_ = instance.Close()
 }

@@ -37,7 +37,8 @@ func buildConfig(kcfg config.KernelConfig, nc *model.NodeSpec, users []model.Use
 
 	// Add default outbounds only if not already defined (Issue #1: Panel priority)
 	if !tags["direct"] {
-		outbounds = append([]M{{"protocol": "freedom", "tag": "direct"}}, outbounds...)
+		// IPv4-first, like soga's default dns_strategy=ipv4_first (see singbox buildConfig)
+		outbounds = append([]M{{"protocol": "freedom", "tag": "direct", "settings": M{"domainStrategy": "UseIPv4v6"}}}, outbounds...)
 	}
 	if !tags["block"] {
 		// block is often added after direct but before others for safety
