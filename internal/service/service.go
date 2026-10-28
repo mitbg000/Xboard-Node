@@ -1158,6 +1158,7 @@ func validateNodeRuntime(cfg *config.Config, kcfgSupported []string, spec *model
 	if !containsString(kcfgSupported, spec.Protocol) {
 		return fmt.Errorf("protocol %q is not supported by kernel %q", spec.Protocol, cfg.Kernel.Type)
 	}
+	applyDefaultSelfSignedCert(spec, tls)
 	if err := validateTLSRequirements(spec, tls, cfgKernelType(cfg)); err != nil {
 		return err
 	}
@@ -1167,17 +1168,36 @@ func validateNodeRuntime(cfg *config.Config, kcfgSupported []string, spec *model
 	return nil
 }
 
-func validateTLSRequirements(spec *model.NodeSpec, tls kernel.TLSCert, kernelType string) error {
-	needsCert := false
+func requiresTLSCert(spec *model.NodeSpec) bool {
 	switch spec.Protocol {
 	case "hysteria", "hysteria2", "tuic", "anytls":
-		needsCert = true
+		return true
 	case "trojan":
-		if spec.TLS != 2 {
-			needsCert = true
+		return spec.TLS != 2
+	}
+	return false
+}
+
+// applyDefaultSelfSignedCert falls back to a self-signed certificate (for the
+// node's tls server_name, else its address) when a protocol needs TLS but
+// neither the panel (cert_mode none / no cert_config) nor the local config
+// provides one. Clients must then allow insecure certificates.
+func applyDefaultSelfSignedCert(spec *model.NodeSpec, tls kernel.TLSCert) {
+	if spec.CertConfig != nil || tls.HasCert() || !requiresTLSCert(spec) {
+		return
+	}
+	domain := ""
+	for _, v := range []string{stringValue(spec.TLSSettings["server_name"]), spec.ServerName, spec.Host} {
+		if domain = strings.TrimSpace(v); domain != "" {
+			break
 		}
 	}
-	if needsCert && !hasUsableTLSConfig(spec, tls) {
+	spec.CertConfig = &config.CertConfig{CertMode: "self", Domain: domain}
+	nlog.Core().Warn("no TLS certificate configured, using a self-signed certificate", "protocol", spec.Protocol, "domain", domain)
+}
+
+func validateTLSRequirements(spec *model.NodeSpec, tls kernel.TLSCert, kernelType string) error {
+	if requiresTLSCert(spec) && !hasUsableTLSConfig(spec, tls) {
 		return fmt.Errorf("protocol %q requires TLS certificate files", spec.Protocol)
 	}
 	if spec.TLS == 2 {

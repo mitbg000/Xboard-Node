@@ -234,6 +234,31 @@ func TestValidateNodeRuntimeAllowsSelfManagedTLSBeforeFilesExist(t *testing.T) {
 	}
 }
 
+func TestValidateNodeRuntimeFallsBackToSelfSignedTLS(t *testing.T) {
+	cfg := &config.Config{Kernel: config.KernelConfig{Type: "singbox"}}
+	spec := &model.NodeSpec{
+		Protocol:    "anytls",
+		TLSSettings: map[string]any{"server_name": "example.com"},
+	}
+	if err := validateNodeRuntime(cfg, []string{"anytls"}, spec, kernel.TLSCert{}); err != nil {
+		t.Fatalf("expected anytls without cert_config to fall back to self-signed TLS, got %v", err)
+	}
+	if spec.CertConfig == nil || spec.CertConfig.CertMode != "self" || spec.CertConfig.Domain != "example.com" {
+		t.Fatalf("expected self-signed cert_config for example.com, got %+v", spec.CertConfig)
+	}
+}
+
+func TestValidateNodeRuntimeSelfSignedTLSUsesNodeHost(t *testing.T) {
+	cfg := &config.Config{Kernel: config.KernelConfig{Type: "singbox"}}
+	spec := &model.NodeSpec{Protocol: "hysteria", Host: "sg.example.com"}
+	if err := validateNodeRuntime(cfg, []string{"hysteria"}, spec, kernel.TLSCert{}); err != nil {
+		t.Fatalf("expected hysteria without cert_config to fall back to self-signed TLS, got %v", err)
+	}
+	if spec.CertConfig == nil || spec.CertConfig.Domain != "sg.example.com" {
+		t.Fatalf("expected self-signed cert_config for the node host, got %+v", spec.CertConfig)
+	}
+}
+
 func TestValidateNodeRuntimeAllowsSingboxRealityWithRequiredFields(t *testing.T) {
 	cfg := &config.Config{Kernel: config.KernelConfig{Type: "singbox"}}
 	err := validateNodeRuntime(cfg, []string{"vless"}, &model.NodeSpec{
