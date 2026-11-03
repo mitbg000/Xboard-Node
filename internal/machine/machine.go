@@ -262,6 +262,7 @@ func (o *Orchestrator) reportMachineStatus() {
 		[2]uint64{s.SwapTotal, s.SwapUsed},
 		[2]uint64{s.DiskTotal, s.DiskUsed},
 		s.NetInSpeed, s.NetOutSpeed,
+		s.NetInTotal, s.NetOutTotal,
 	); err != nil {
 		nlog.Core().Warn("machine status report failed", "error", err)
 	}

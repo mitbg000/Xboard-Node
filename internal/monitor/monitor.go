@@ -46,6 +46,11 @@ type Status struct {
 	NetInSpeed  float64
 	NetOutSpeed float64
 
+	// Cumulative bytes received/sent on physical interfaces since boot.
+	// The panel sums the deltas between reports for exact bandwidth totals.
+	NetInTotal  uint64
+	NetOutTotal uint64
+
 	// GC metrics (process-wide)
 	NumGC       uint32
 	LastPauseMS float64
@@ -58,6 +63,10 @@ var (
 	netPrevSent uint64
 	netPrevTime time.Time
 	netHasBase  bool
+
+	// Latest cumulative counters (bytes since boot), updated on every sample.
+	netTotalRecv uint64
+	netTotalSent uint64
 )
 
 // skipInterface returns true for loopback and common virtual interfaces.
@@ -93,6 +102,8 @@ func collectNetSpeed() (inSpeed, outSpeed float64) {
 
 	netMu.Lock()
 	defer netMu.Unlock()
+
+	netTotalRecv, netTotalSent = totalRecv, totalSent
 
 	if !netHasBase {
 		netPrevRecv, netPrevSent, netPrevTime, netHasBase = totalRecv, totalSent, now, true
@@ -156,6 +167,9 @@ func Collect() Status {
 	}
 
 	s.NetInSpeed, s.NetOutSpeed = collectNetSpeed()
+	netMu.Lock()
+	s.NetInTotal, s.NetOutTotal = netTotalRecv, netTotalSent
+	netMu.Unlock()
 
 	// GC metrics
 	var ms runtime.MemStats
