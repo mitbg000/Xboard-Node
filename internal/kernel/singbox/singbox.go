@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -231,19 +232,56 @@ func (s *SingBox) Reload(nodeConfig *model.NodeSpec, users []model.UserSpec, tls
 	}
 
 	nopFactory := singLog.NewNOPFactory()
-	oldOutbounds := outboundFingerprints(buildConfig(s.cfg, s.nodeConfig, s.users, s.tls))
-	newOutbounds := outboundFingerprints(cfgMap)
+	oldOutbounds, oldOrder, err := outboundGraph(buildConfig(s.cfg, s.nodeConfig, s.users, s.tls))
+	if err != nil {
+		return fmt.Errorf("current outbounds: %w", err)
+	}
+	newOutbounds, newOrder, err := outboundGraph(cfgMap)
+	if err != nil {
+		return fmt.Errorf("new outbounds: %w", err)
+	}
 
-	// Outbounds a rule may target must exist before the rules are swapped.
-	// Create replaces an outbound with the same tag; connections already open
-	// through the old one keep running until they end.
-	for _, out := range opts.Outbounds {
-		if oldOutbounds[out.Tag] == newOutbounds[out.Tag] {
+	// An outbound is stale when it changed or left the config, and also when one
+	// it chains through is stale: its dialer keeps a reference to that instance.
+	stale := make(map[string]bool)
+	for _, tag := range oldOrder {
+		old := oldOutbounds[tag]
+		next, kept := newOutbounds[tag]
+		stale[tag] = !kept || old.fingerprint != next.fingerprint
+		for _, dep := range old.deps {
+			stale[tag] = stale[tag] || stale[dep]
+		}
+	}
+
+	// Create never forgets the dependencies of the outbound it replaces, and Remove
+	// refuses to close an outbound still listed as depended on. So anything with
+	// dependencies is removed first, dependents before their targets. Outbounds
+	// without any are swapped by Create below, with no gap in service.
+	for _, tag := range slices.Backward(oldOrder) {
+		_, kept := newOutbounds[tag]
+		if !stale[tag] || (kept && len(oldOutbounds[tag].deps) == 0) {
 			continue
 		}
-		logger := nopFactory.NewLogger(fmt.Sprintf("outbound/%s[%s]", out.Type, out.Tag))
-		if err := om.Create(s.ctx, router, logger, out.Tag, out.Type, out.Options); err != nil {
-			return fmt.Errorf("create outbound %s: %w", out.Tag, err)
+		if err := om.Remove(tag); err != nil {
+			nlog.Core().Warn("remove outbound failed", "tag", tag, "error", err)
+		}
+	}
+
+	// Outbounds a rule may target must exist before the rules are swapped, and
+	// targets before the outbounds chained through them. Connections already open
+	// through a replaced outbound keep running until they end.
+	outboundOptions := make(map[string]option.Outbound, len(opts.Outbounds))
+	for _, out := range opts.Outbounds {
+		outboundOptions[out.Tag] = out
+	}
+	for _, tag := range newOrder {
+		if _, exists := om.Outbound(tag); exists && !stale[tag] {
+			continue
+		}
+		out := outboundOptions[tag]
+		logger := nopFactory.NewLogger(fmt.Sprintf("outbound/%s[%s]", out.Type, tag))
+		if err := om.Create(s.ctx, router, logger, tag, out.Type, out.Options); err != nil {
+			return fmt.Errorf("create outbound %s: %w", tag, err)
 		}
 	}
 
@@ -252,15 +290,6 @@ func (s *SingBox) Reload(nodeConfig *model.NodeSpec, users []model.UserSpec, tls
 		nlog.Core().Warn("routing reload failed", "error", err)
 	} else {
 		nlog.Core().Debug("sing-box routing reloaded")
-	}
-
-	for tag := range oldOutbounds {
-		if _, ok := newOutbounds[tag]; ok {
-			continue
-		}
-		if err := om.Remove(tag); err != nil {
-			nlog.Core().Warn("remove outbound failed", "tag", tag, "error", err)
-		}
 	}
 
 	// Configuration hash check for inbound reconstruction
@@ -347,17 +376,71 @@ func (s *SingBox) Reload(nodeConfig *model.NodeSpec, users []model.UserSpec, tls
 	return nil
 }
 
-// outboundFingerprints maps each outbound tag in a generated config to its JSON,
-// so a reload can tell which outbounds were added, changed or removed.
-func outboundFingerprints(cfg M) map[string]string {
+// outboundNode is an outbound of a generated config: its JSON, so a reload can
+// tell what changed, and the tags of the outbounds it holds references to.
+type outboundNode struct {
+	fingerprint string
+	deps        []string
+}
+
+// outboundGraph reads the outbounds of a generated config and orders their tags
+// with every outbound after the ones it depends on. It fails on a dependency
+// cycle, which sing-box could never start.
+func outboundGraph(cfg M) (map[string]outboundNode, []string, error) {
 	outbounds, _ := cfg["outbounds"].([]M)
-	fingerprints := make(map[string]string, len(outbounds))
+	nodes := make(map[string]outboundNode, len(outbounds))
 	for _, out := range outbounds {
 		tag, _ := out["tag"].(string)
 		data, _ := json.Marshal(out)
-		fingerprints[tag] = string(data)
+		nodes[tag] = outboundNode{fingerprint: string(data), deps: outboundDeps(out)}
 	}
-	return fingerprints
+
+	order := make([]string, 0, len(nodes))
+	const visiting, done = 1, 2
+	state := make(map[string]int, len(nodes))
+	var visit func(tag string) error
+	visit = func(tag string) error {
+		node, known := nodes[tag]
+		if !known || state[tag] == done {
+			return nil // a tag defined elsewhere, like an endpoint, is not replaced by Reload
+		}
+		if state[tag] == visiting {
+			return fmt.Errorf("circular outbound dependency at %q", tag)
+		}
+		state[tag] = visiting
+		for _, dep := range node.deps {
+			if err := visit(dep); err != nil {
+				return err
+			}
+		}
+		state[tag] = done
+		order = append(order, tag)
+		return nil
+	}
+	for _, out := range outbounds {
+		tag, _ := out["tag"].(string)
+		if err := visit(tag); err != nil {
+			return nil, nil, err
+		}
+	}
+	return nodes, order, nil
+}
+
+// outboundDeps returns the tags out refers to: its detour, plus the members of a
+// group such as selector or urltest.
+func outboundDeps(out M) []string {
+	var deps []string
+	if detour, ok := out["detour"].(string); ok && detour != "" {
+		deps = append(deps, detour)
+	}
+	if members, ok := out["outbounds"].([]any); ok {
+		for _, member := range members {
+			if tag, ok := member.(string); ok {
+				deps = append(deps, tag)
+			}
+		}
+	}
+	return deps
 }
 
 // registerTracker wires the ConnTracker to the current Router exactly once.

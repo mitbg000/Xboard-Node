@@ -39,6 +39,13 @@ func buildConfig(kcfg config.KernelConfig, nc *model.NodeSpec, users []model.Use
 
 	// Add default outbounds only if not already defined
 	if !tags["direct"] {
+		// Panel chains may target the built-in direct outbound, which means dialing
+		// directly. sing-box would refuse a detour to an empty direct outbound at dial time.
+		for _, out := range outbounds[:len(nc.CustomOutbounds)] {
+			if out["detour"] == "direct" {
+				delete(out, "detour")
+			}
+		}
 		outbounds = append([]M{{"type": "direct", "tag": "direct"}}, outbounds...)
 	}
 	if !tags["block"] {
@@ -179,7 +186,7 @@ func outboundConfigToSingbox(oc model.OutboundConfig) M {
 	}
 
 	if oc.ProxyTag != "" {
-		m["proxy_tag"] = oc.ProxyTag
+		m["detour"] = oc.ProxyTag
 	}
 	return m
 }
