@@ -193,9 +193,9 @@ func recycleOldBox(oldBox *box.Box, oldCancel context.CancelFunc, oldCtx context
 	nlog.Core().Debug("sing-box: old instance recycled")
 }
 
-// Reload hot-swaps the inbound users and routing rules without restarting the box.
-// Routes, outbounds, and the connTracker stay alive so in-flight connections
-// continue to be tracked correctly.
+// Reload hot-swaps the inbound users, outbounds and routing rules without
+// restarting the box. Unchanged outbounds and the connTracker stay alive so
+// in-flight connections continue to be tracked correctly.
 func (s *SingBox) Reload(nodeConfig *model.NodeSpec, users []model.UserSpec, tls kernel.TLSCert) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -225,14 +225,43 @@ func (s *SingBox) Reload(nodeConfig *model.NodeSpec, users []model.UserSpec, tls
 		return fmt.Errorf("router not available")
 	}
 
+	om := service.FromContext[adapter.OutboundManager](s.ctx)
+	if om == nil {
+		return fmt.Errorf("outbound manager not available")
+	}
+
+	nopFactory := singLog.NewNOPFactory()
+	oldOutbounds := outboundFingerprints(buildConfig(s.cfg, s.nodeConfig, s.users, s.tls))
+	newOutbounds := outboundFingerprints(cfgMap)
+
+	// Outbounds a rule may target must exist before the rules are swapped.
+	// Create replaces an outbound with the same tag; connections already open
+	// through the old one keep running until they end.
+	for _, out := range opts.Outbounds {
+		if oldOutbounds[out.Tag] == newOutbounds[out.Tag] {
+			continue
+		}
+		logger := nopFactory.NewLogger(fmt.Sprintf("outbound/%s[%s]", out.Type, out.Tag))
+		if err := om.Create(s.ctx, router, logger, out.Tag, out.Type, out.Options); err != nil {
+			return fmt.Errorf("create outbound %s: %w", out.Tag, err)
+		}
+	}
+
 	// Update routing rules
 	if err := router.UpdateRules(opts.Route.Rules, opts.Route.RuleSet); err != nil {
-		nlog.Core().Debug("routing reload failed", "error", err)
+		nlog.Core().Warn("routing reload failed", "error", err)
 	} else {
 		nlog.Core().Debug("sing-box routing reloaded")
 	}
 
-	nopFactory := singLog.NewNOPFactory()
+	for tag := range oldOutbounds {
+		if _, ok := newOutbounds[tag]; ok {
+			continue
+		}
+		if err := om.Remove(tag); err != nil {
+			nlog.Core().Warn("remove outbound failed", "tag", tag, "error", err)
+		}
+	}
 
 	// Configuration hash check for inbound reconstruction
 	tlsChanged := !bytes.Equal(s.tls.CertPEM, tls.CertPEM) || !bytes.Equal(s.tls.KeyPEM, tls.KeyPEM)
@@ -316,6 +345,19 @@ func (s *SingBox) Reload(nodeConfig *model.NodeSpec, users []model.UserSpec, tls
 	s.nodeConfig = nodeConfig
 	s.tls = tls
 	return nil
+}
+
+// outboundFingerprints maps each outbound tag in a generated config to its JSON,
+// so a reload can tell which outbounds were added, changed or removed.
+func outboundFingerprints(cfg M) map[string]string {
+	outbounds, _ := cfg["outbounds"].([]M)
+	fingerprints := make(map[string]string, len(outbounds))
+	for _, out := range outbounds {
+		tag, _ := out["tag"].(string)
+		data, _ := json.Marshal(out)
+		fingerprints[tag] = string(data)
+	}
+	return fingerprints
 }
 
 // registerTracker wires the ConnTracker to the current Router exactly once.
