@@ -57,6 +57,8 @@ type ReportPayload struct {
 	Swap    [2]uint64
 	Disk    [2]uint64
 	Metrics map[string]interface{}
+	// Sites: site → [][uid, connections, upload, download] (see sitestats.Flush)
+	Sites map[string][][4]int64
 }
 
 type PushClient interface {

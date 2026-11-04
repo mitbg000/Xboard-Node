@@ -335,3 +335,28 @@ func TestStringOrArrayDecodeHook_String(t *testing.T) {
 		t.Errorf("got %q, want %q", cfg.PaddingScheme, want)
 	}
 }
+
+func TestReportSendsSitesOnlyWhenPresent(t *testing.T) {
+	var bodies []map[string]json.RawMessage
+	srv, c := newTestServer(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]json.RawMessage
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		bodies = append(bodies, body)
+		w.WriteHeader(http.StatusOK)
+	})
+	defer srv.Close()
+
+	if err := c.Report(nil, nil, nil, 0, [2]uint64{}, [2]uint64{}, [2]uint64{}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	sites := map[string][][4]int64{"youtube.com": {{7, 2, 10, 20}}}
+	if err := c.Report(nil, nil, nil, 0, [2]uint64{}, [2]uint64{}, [2]uint64{}, nil, sites); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := bodies[0]["sites"]; ok {
+		t.Fatal("empty sites must not be sent")
+	}
+	if got := string(bodies[1]["sites"]); got != `{"youtube.com":[[7,2,10,20]]}` {
+		t.Fatalf("sites = %s", got)
+	}
+}

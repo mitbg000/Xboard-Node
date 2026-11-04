@@ -22,6 +22,7 @@ import (
 	"github.com/cedar2025/xboard-node/internal/kernel"
 	"github.com/cedar2025/xboard-node/internal/model"
 	"github.com/cedar2025/xboard-node/internal/nlog"
+	"github.com/cedar2025/xboard-node/internal/sitestats"
 )
 
 // drainTimeout is how long stop() waits for in-flight connections to finish
@@ -57,6 +58,8 @@ type SingBox struct {
 	// deviceLimitFunc resolves a user UUID to (limit, hasLimit) for gate-keeping.
 	// Set once by SetDeviceLimitFunc and forwarded to every new ConnTracker.
 	deviceLimitFunc func(string) (int, bool)
+
+	siteStats *sitestats.Stats
 
 	// trackerRegistered prevents duplicate AppendTracker calls on the same
 	// Router instance during Reload. Reset to false on full restart.
@@ -148,6 +151,7 @@ func (s *SingBox) Start(nodeConfig *model.NodeSpec, users []model.UserSpec, tls 
 	if s.deviceLimitFunc != nil {
 		s.connTracker.SetDeviceLimitFunc(s.deviceLimitFunc)
 	}
+	s.connTracker.SetSiteStats(s.siteStats)
 
 	s.trackerRegistered = false
 	s.registerTracker(ctx)
@@ -403,6 +407,16 @@ func (s *SingBox) SetDeviceLimitFunc(fn func(uuid string) (int, bool)) {
 	s.deviceLimitFunc = fn
 	if s.connTracker != nil {
 		s.connTracker.SetDeviceLimitFunc(fn)
+	}
+}
+
+// SetSiteStats configures where per-user website totals are counted.
+func (s *SingBox) SetSiteStats(stats *sitestats.Stats) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.siteStats = stats
+	if s.connTracker != nil {
+		s.connTracker.SetSiteStats(stats)
 	}
 }
 

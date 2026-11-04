@@ -6,7 +6,10 @@ import (
 
 	"github.com/cedar2025/xboard-node/internal/model"
 	"github.com/xtls/xray-core/common/buf"
+	xnet "github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/transport"
+
+	"github.com/cedar2025/xboard-node/internal/sitestats"
 )
 
 func newTestDispatcher() *LimitDispatcher {
@@ -195,7 +198,7 @@ func TestLimitDispatcher_TrackLinkPreservesReader(t *testing.T) {
 	origWriter := &closeTrackingWriter{Writer: buf.Discard, onClose: func() {}}
 	link := &transport.Link{Reader: origReader, Writer: origWriter}
 
-	ld.trackLink(link, email, "1.1.1.1", true)
+	ld.trackLink(link, email, "1.1.1.1", true, xnet.TCPDestination(xnet.DomainAddress("www.youtube.com"), 443))
 
 	if link.Reader != origReader {
 		t.Fatal("trackLink must not replace link.Reader")
@@ -214,7 +217,7 @@ func TestLimitDispatcher_CloseTrackingWriterReleasesConn(t *testing.T) {
 	}
 
 	link := &transport.Link{Reader: nopReader{}, Writer: buf.Discard}
-	ld.trackLink(link, email, "1.1.1.1", true)
+	ld.trackLink(link, email, "1.1.1.1", true, xnet.TCPDestination(xnet.DomainAddress("www.youtube.com"), 443))
 
 	if got := ld.connCount.Load(); got != 1 {
 		t.Fatalf("expected connCount=1 after tracking, got %d", got)
@@ -231,5 +234,23 @@ func TestLimitDispatcher_CloseTrackingWriterReleasesConn(t *testing.T) {
 	}
 	if ld.checkDeviceLimit(email, "2.2.2.2", true) {
 		t.Fatal("device slot should be released after writer close")
+	}
+}
+
+func TestLimitDispatcher_CountsSites(t *testing.T) {
+	stats := sitestats.New()
+	globalSiteStats.Store(stats)
+	defer globalSiteStats.Store(nil)
+
+	ld := newTestDispatcher()
+	email := userEmail(1)
+	ld.UpdateLimits(map[string]int{email: 7}, map[string]int{email: 1}, nil)
+	link := &transport.Link{Reader: nopReader{}, Writer: buf.Discard}
+	ld.trackLink(link, email, "1.1.1.1", false, xnet.TCPDestination(xnet.DomainAddress("www.youtube.com"), 443))
+	link.Writer.(*closeTrackingWriter).Interrupt()
+
+	got := stats.Flush()["youtube.com"]
+	if len(got) != 1 || got[0] != [4]int64{7, 1, 0, 0} {
+		t.Fatalf("youtube.com = %v, want [[7 1 0 0]]", got)
 	}
 }

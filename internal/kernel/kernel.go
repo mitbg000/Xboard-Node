@@ -8,6 +8,7 @@ import (
 	"sort"
 
 	"github.com/cedar2025/xboard-node/internal/model"
+	"github.com/cedar2025/xboard-node/internal/sitestats"
 	"golang.org/x/time/rate"
 )
 
@@ -97,6 +98,8 @@ type Kernel interface {
 	// The function resolves a user UUID to (limit, hasLimit).
 	// Kernels that already gate-keep internally (e.g. xray) may no-op.
 	SetDeviceLimitFunc(fn func(uuid string) (int, bool))
+	// SetSiteStats sets where per-user website totals are counted (nil = off).
+	SetSiteStats(stats *sitestats.Stats)
 	// UpdateGlobalDevices updates the global device state from panel (for multi-node).
 	UpdateGlobalDevices(users map[int][]string)
 	// ClearGlobalDevices clears the global device state (on WS disconnect).

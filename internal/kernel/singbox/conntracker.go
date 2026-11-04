@@ -16,6 +16,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/cedar2025/xboard-node/internal/nlog"
+	"github.com/cedar2025/xboard-node/internal/sitestats"
 )
 
 // ipPool caches ipSnapshot maps to reduce allocations.
@@ -135,6 +136,9 @@ type ConnTracker struct {
 	// deviceLimitFunc resolves a user UUID to their device limit.
 	deviceLimitFunc atomic.Pointer[func(uuid string) (int, bool)]
 
+	// siteStats counts connections and bytes per user and website.
+	siteStats atomic.Pointer[sitestats.Stats]
+
 	// Multi-node device state from panel
 	globalDevices    map[int]map[string]bool // userID → IP → exists
 	globalMu         sync.RWMutex
@@ -159,6 +163,22 @@ func (t *ConnTracker) SetSpeedLimitFunc(fn func(uuid string) *rate.Limiter) {
 // SetDeviceLimitFunc configures the per-user device limit lookup for gate-keeping.
 func (t *ConnTracker) SetDeviceLimitFunc(fn func(uuid string) (int, bool)) {
 	t.deviceLimitFunc.Store(&fn)
+}
+
+// SetSiteStats configures where per-user website totals are counted.
+func (t *ConnTracker) SetSiteStats(stats *sitestats.Stats) {
+	t.siteStats.Store(stats)
+}
+
+// siteHost returns the domain the client asked for, or "" when it sent an IP.
+func siteHost(metadata adapter.InboundContext) string {
+	if metadata.Domain != "" {
+		return metadata.Domain
+	}
+	if metadata.Destination.IsFqdn() {
+		return metadata.Destination.Fqdn
+	}
+	return ""
 }
 
 // SetUserMap replaces the UUID→userID mapping and ensures per-user stats
@@ -255,6 +275,7 @@ func (t *ConnTracker) RoutedConnection(
 		sourceIP: sourceIP,
 		limiter:  lim,
 		ctx:      ctx,
+		site:     t.siteStats.Load().Open(uid, siteHost(metadata)),
 	}
 }
 
@@ -307,6 +328,7 @@ func (t *ConnTracker) RoutedPacketConnection(
 		sourceIP:   sourceIP,
 		limiter:    lim,
 		ctx:        ctx,
+		site:       t.siteStats.Load().Open(uid, siteHost(metadata)),
 	}
 }
 
@@ -567,6 +589,7 @@ type trackedConn struct {
 	limiter  *rate.Limiter
 	ctx      context.Context
 	closed   atomic.Bool
+	site     *sitestats.Counter
 }
 
 func (c *trackedConn) Read(b []byte) (int, error) {
@@ -580,6 +603,7 @@ func (c *trackedConn) Read(b []byte) (int, error) {
 		if c.us != nil {
 			c.us.upload.Add(int64(n)) // 从入站读取 = 用户上传
 		}
+		c.site.AddUp(int64(n))
 		if c.limiter != nil {
 			// Non-blocking rate limiting
 			if !c.limiter.AllowN(time.Now(), n) {
@@ -628,6 +652,9 @@ func (c *trackedConn) Write(b []byte) (int, error) {
 	if n > 0 && c.us != nil {
 		c.us.download.Add(int64(n)) // 向入站写入 = 用户下载
 	}
+	if n > 0 {
+		c.site.AddDown(int64(n))
+	}
 	return n, err
 }
 
@@ -637,18 +664,20 @@ func (c *trackedConn) Close() error {
 			c.us.removeConn(c.sourceIP)
 		}
 		c.tracker.removeConnRef(c.connID)
+		c.site.Close()
 	}
 	return c.Conn.Close()
 }
 
 // makeCountFunc builds a CountFunc for zero-copy byte counting via sing's
 // ReadCounter/WriteCounter unwrap interfaces.
-func (c *trackedConn) makeCountFunc(counter *atomic.Int64) N.CountFunc {
+func (c *trackedConn) makeCountFunc(counter *atomic.Int64, site func(int64)) N.CountFunc {
 	if c.limiter == nil {
-		return func(n int64) { counter.Add(n) }
+		return func(n int64) { counter.Add(n); site(n) }
 	}
 	return func(n int64) {
 		counter.Add(n)
+		site(n)
 		// Non-blocking rate limiting with context cancellation
 		if !c.limiter.AllowN(time.Now(), int(n)) {
 			resv := c.limiter.ReserveN(time.Now(), int(n))
@@ -670,14 +699,14 @@ func (c *trackedConn) UnwrapReader() (io.Reader, []N.CountFunc) {
 	if c.us == nil {
 		return c.Conn, nil
 	}
-	return c.Conn, []N.CountFunc{c.makeCountFunc(&c.us.upload)} // 从入站读取 = 用户上传
+	return c.Conn, []N.CountFunc{c.makeCountFunc(&c.us.upload, c.site.AddUp)} // 从入站读取 = 用户上传
 }
 
 func (c *trackedConn) UnwrapWriter() (io.Writer, []N.CountFunc) {
 	if c.us == nil {
 		return c.Conn, nil
 	}
-	return c.Conn, []N.CountFunc{c.makeCountFunc(&c.us.download)} // 向入站写入 = 用户下载
+	return c.Conn, []N.CountFunc{c.makeCountFunc(&c.us.download, c.site.AddDown)} // 向入站写入 = 用户下载
 }
 
 func (c *trackedConn) Upstream() any           { return c.Conn }
@@ -696,6 +725,7 @@ type trackedPacketConn struct {
 	limiter  *rate.Limiter
 	ctx      context.Context
 	closed   atomic.Bool
+	site     *sitestats.Counter
 }
 
 func (c *trackedPacketConn) ReadPacket(buffer *buf.Buffer) (singM.Socksaddr, error) {
@@ -705,6 +735,7 @@ func (c *trackedPacketConn) ReadPacket(buffer *buf.Buffer) (singM.Socksaddr, err
 		if c.us != nil {
 			c.us.upload.Add(n) // 从入站读取 = 用户上传
 		}
+		c.site.AddUp(n)
 		if c.limiter != nil {
 			// Non-blocking rate limiting with context cancellation
 			if !c.limiter.AllowN(time.Now(), int(n)) {
@@ -751,6 +782,9 @@ func (c *trackedPacketConn) WritePacket(buffer *buf.Buffer, dest singM.Socksaddr
 	if err == nil && c.us != nil {
 		c.us.download.Add(n) // 向入站写入 = 用户下载
 	}
+	if err == nil {
+		c.site.AddDown(n)
+	}
 	return err
 }
 
@@ -760,16 +794,18 @@ func (c *trackedPacketConn) Close() error {
 			c.us.removeConn(c.sourceIP)
 		}
 		c.tracker.removeConnRef(c.connID)
+		c.site.Close()
 	}
 	return c.PacketConn.Close()
 }
 
-func (c *trackedPacketConn) makeCountFunc(counter *atomic.Int64) N.CountFunc {
+func (c *trackedPacketConn) makeCountFunc(counter *atomic.Int64, site func(int64)) N.CountFunc {
 	if c.limiter == nil {
-		return func(n int64) { counter.Add(n) }
+		return func(n int64) { counter.Add(n); site(n) }
 	}
 	return func(n int64) {
 		counter.Add(n)
+		site(n)
 		// Non-blocking rate limiting with context cancellation
 		if !c.limiter.AllowN(time.Now(), int(n)) {
 			resv := c.limiter.ReserveN(time.Now(), int(n))
@@ -791,14 +827,14 @@ func (c *trackedPacketConn) UnwrapPacketReader() (N.PacketReader, []N.CountFunc)
 	if c.us == nil {
 		return c.PacketConn, nil
 	}
-	return c.PacketConn, []N.CountFunc{c.makeCountFunc(&c.us.download)}
+	return c.PacketConn, []N.CountFunc{c.makeCountFunc(&c.us.download, c.site.AddDown)}
 }
 
 func (c *trackedPacketConn) UnwrapPacketWriter() (N.PacketWriter, []N.CountFunc) {
 	if c.us == nil {
 		return c.PacketConn, nil
 	}
-	return c.PacketConn, []N.CountFunc{c.makeCountFunc(&c.us.upload)}
+	return c.PacketConn, []N.CountFunc{c.makeCountFunc(&c.us.upload, c.site.AddUp)}
 }
 
 func (c *trackedPacketConn) Upstream() any           { return c.PacketConn }

@@ -11,6 +11,7 @@ import (
 	"github.com/cedar2025/xboard-node/internal/kernel"
 	"github.com/cedar2025/xboard-node/internal/limiter"
 	"github.com/cedar2025/xboard-node/internal/model"
+	"github.com/cedar2025/xboard-node/internal/sitestats"
 	"golang.org/x/time/rate"
 )
 
@@ -93,6 +94,7 @@ func (f *fakeKernel) CloseUserConnections(ctx context.Context, uuid string) erro
 }
 func (f *fakeKernel) SetSpeedLimitFunc(fn func(uuid string) *rate.Limiter) { f.speedLimitFunc = fn }
 func (f *fakeKernel) SetDeviceLimitFunc(fn func(uuid string) (int, bool)) { f.deviceLimitFunc = fn }
+func (f *fakeKernel) SetSiteStats(*sitestats.Stats) {}
 func (f *fakeKernel) UpdateGlobalDevices(users map[int][]string) { _ = users }
 func (f *fakeKernel) ClearGlobalDevices() {}
 

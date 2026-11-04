@@ -33,6 +33,7 @@ import (
 	"github.com/cedar2025/xboard-node/internal/kernel"
 	"github.com/cedar2025/xboard-node/internal/kernel/geodata"
 	"github.com/cedar2025/xboard-node/internal/nlog"
+	"github.com/cedar2025/xboard-node/internal/sitestats"
 	"github.com/cedar2025/xboard-node/internal/model"
 )
 
@@ -263,6 +264,13 @@ func (x *Xray) SetSpeedLimitFunc(fn func(string) *rate.Limiter) {
 	x.speedLimitFunc = fn
 	x.mu.Unlock()
 	x.updateBandwidthLimits(nil)
+}
+
+// SetSiteStats configures where per-user website totals are counted. Xray only
+// counts connections: LimitDispatcher must not wrap the link reader that byte
+// counting would need.
+func (x *Xray) SetSiteStats(stats *sitestats.Stats) {
+	globalSiteStats.Store(stats)
 }
 
 // SetDeviceLimitFunc is a no-op for xray — device limits are already

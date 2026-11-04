@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/cedar2025/xboard-node/internal/config"
+	"github.com/cedar2025/xboard-node/internal/sitestats"
 	"github.com/sagernet/sing-box/adapter"
 	singM "github.com/sagernet/sing/common/metadata"
 	"golang.org/x/time/rate"
@@ -71,6 +72,45 @@ func testInboundContext(uuid, ip string) adapter.InboundContext {
 	return adapter.InboundContext{
 		User:   uuid,
 		Source: singM.Socksaddr{Addr: netip.MustParseAddr(ip)},
+	}
+}
+
+func TestConnTrackerCountsSites(t *testing.T) {
+	stats := sitestats.New()
+	tracker := NewConnTracker(0)
+	tracker.SetUserMap(map[string]int{"uuid-1": 1})
+	tracker.SetSiteStats(stats)
+
+	// Domain sent by the client
+	byName := testInboundContext("uuid-1", "1.1.1.1")
+	byName.Destination = singM.ParseSocksaddrHostPort("www.youtube.com", 443)
+	conn := tracker.RoutedConnection(context.Background(), &testConn{reads: [][]byte{[]byte("hello")}}, byName, nil, nil)
+	buf := make([]byte, 16)
+	if _, err := conn.Read(buf); err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if _, err := conn.Write([]byte("bye")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	_ = conn.Close()
+
+	// Client sent an IP, but the kernel sniffed the domain
+	sniffed := testInboundContext("uuid-1", "1.1.1.1")
+	sniffed.Destination = singM.ParseSocksaddrHostPort("142.250.1.1", 443)
+	sniffed.Domain = "m.youtube.com"
+	_ = tracker.RoutedConnection(context.Background(), &testConn{}, sniffed, nil, nil).Close()
+
+	// Client sent an IP
+	byIP := testInboundContext("uuid-1", "1.1.1.1")
+	byIP.Destination = singM.ParseSocksaddrHostPort("142.250.1.1", 443)
+	_ = tracker.RoutedConnection(context.Background(), &testConn{}, byIP, nil, nil).Close()
+
+	got := stats.Flush()
+	if rows := got["youtube.com"]; len(rows) != 1 || rows[0] != [4]int64{1, 2, 5, 3} {
+		t.Fatalf("youtube.com = %v, want [[1 2 5 3]]", rows)
+	}
+	if rows := got[sitestats.SiteIP]; len(rows) != 1 || rows[0][1] != 1 {
+		t.Fatalf("[ip] = %v, want one connection", rows)
 	}
 }
 

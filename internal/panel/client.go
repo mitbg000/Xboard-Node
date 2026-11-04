@@ -109,6 +109,7 @@ func (c *Client) Handshake() (*HandshakeResponse, error) {
 func (c *Client) Report(traffic map[int][2]int64, alive map[int][]string, online map[int]int,
 	cpu float64, mem, swap, disk [2]uint64,
 	metrics map[string]interface{},
+	sites map[string][][4]int64,
 ) error {
 	payload := make(map[string]interface{})
 
@@ -164,6 +165,10 @@ func (c *Client) Report(traffic map[int][2]int64, alive map[int][]string, online
 
 	if len(metrics) > 0 {
 		payload["metrics"] = metrics
+	}
+
+	if len(sites) > 0 {
+		payload["sites"] = sites
 	}
 
 	return c.postJSON("/api/v2/server/report", payload)

@@ -25,8 +25,13 @@ import (
 	"github.com/cedar2025/xboard-node/internal/model"
 	"github.com/cedar2025/xboard-node/internal/monitor"
 	"github.com/cedar2025/xboard-node/internal/nlog"
+	"github.com/cedar2025/xboard-node/internal/sitestats"
 	"github.com/cedar2025/xboard-node/internal/tracker"
 )
+
+// siteReportInterval keeps website totals out of most reports: they are the
+// largest part of the payload and only daily totals are stored.
+const siteReportInterval = 10 * time.Minute
 
 type Service struct {
 	cfg          *config.Config
@@ -58,6 +63,10 @@ type Service struct {
 	lastConfigHash string     // hash of full config for change detection
 	pullBackoff    apiBackoff // backoff for panel pull failures
 	pushBackoff    apiBackoff // backoff for panel push failures
+
+	// sites counts per-user website totals; sent every siteReportInterval.
+	sites         *sitestats.Stats
+	sitesReportAt time.Time
 
 	// pushActive prevents overlapping push/pull goroutines.
 	pushActive atomic.Bool
@@ -248,6 +257,10 @@ func (s *Service) initialSetup(ctx context.Context) error {
 	// Register speed limit lookup with kernel unconditionally (before push/poll branch).
 	s.kernel.SetSpeedLimitFunc(s.speedTracker.GetLimiter)
 	s.kernel.SetDeviceLimitFunc(s.limiter.GetDeviceLimitByUUID)
+	if s.sink.SupportsReporting() {
+		s.sites = sitestats.New()
+		s.kernel.SetSiteStats(s.sites)
+	}
 
 	bootstrap, err := s.source.Initial(ctx, s.wsMetrics, s.wsEvents, s.wsStatusCh)
 	if err != nil {
@@ -981,11 +994,17 @@ func (s *Service) pushReportAsync() {
 	status := monitor.Collect()
 	metrics := s.buildMetrics(status)
 	metrics["kernel_status"] = s.kernel.IsRunning()
+	var sites map[string][][4]int64
+	if time.Since(s.sitesReportAt) >= siteReportInterval {
+		sites = s.sites.Flush()
+		s.sitesReportAt = time.Now()
+	}
 
 	go func() {
 		defer s.pushActive.Store(false)
-		if err := s.sink.Report(controlplane.ReportPayload{Traffic: traffic, Alive: aliveIPs, Online: online, CPU: status.CPU, Mem: [2]uint64{status.MemTotal, status.MemUsed}, Swap: [2]uint64{status.SwapTotal, status.SwapUsed}, Disk: [2]uint64{status.DiskTotal, status.DiskUsed}, Metrics: metrics}); err != nil {
+		if err := s.sink.Report(controlplane.ReportPayload{Traffic: traffic, Alive: aliveIPs, Online: online, CPU: status.CPU, Mem: [2]uint64{status.MemTotal, status.MemUsed}, Swap: [2]uint64{status.SwapTotal, status.SwapUsed}, Disk: [2]uint64{status.DiskTotal, status.DiskUsed}, Metrics: metrics, Sites: sites}); err != nil {
 			nlog.Core().Warn("failed to push report", "error", err)
+			s.sites.Restore(sites)
 			if len(traffic) > 0 {
 				s.tracker.RestoreTraffic(traffic)
 			}
@@ -1012,7 +1031,7 @@ func (s *Service) pushReportSync() {
 	metrics := s.buildMetrics(status)
 	metrics["kernel_status"] = s.kernel.IsRunning()
 
-	if err := s.sink.Report(controlplane.ReportPayload{Traffic: traffic, Alive: aliveIPs, Online: online, CPU: status.CPU, Mem: [2]uint64{status.MemTotal, status.MemUsed}, Swap: [2]uint64{status.SwapTotal, status.SwapUsed}, Disk: [2]uint64{status.DiskTotal, status.DiskUsed}, Metrics: metrics}); err != nil {
+	if err := s.sink.Report(controlplane.ReportPayload{Traffic: traffic, Alive: aliveIPs, Online: online, CPU: status.CPU, Mem: [2]uint64{status.MemTotal, status.MemUsed}, Swap: [2]uint64{status.SwapTotal, status.SwapUsed}, Disk: [2]uint64{status.DiskTotal, status.DiskUsed}, Metrics: metrics, Sites: s.sites.Flush()}); err != nil {
 		nlog.Core().Warn("failed to push final report", "error", err)
 	}
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/xtls/xray-core/transport"
 
 	"github.com/cedar2025/xboard-node/internal/nlog"
+	"github.com/cedar2025/xboard-node/internal/sitestats"
 )
 
 // Access xray's internal config creator registry so we can replace the
@@ -32,6 +33,9 @@ var origDispatcherFactory common.ConfigCreator
 // globalLimitDispatcher is set when the factory creates a LimitDispatcher.
 // The Xray kernel reads it to configure limits and get connections.
 var globalLimitDispatcher atomic.Pointer[LimitDispatcher]
+
+// globalSiteStats is where website totals are counted (nil = off).
+var globalSiteStats atomic.Pointer[sitestats.Stats]
 
 func init() {
 	configType := reflect.TypeOf((*xrayDispatcher.Config)(nil))
@@ -117,7 +121,7 @@ func (d *LimitDispatcher) Dispatch(ctx context.Context, dest net.Destination) (*
 	}
 
 	if email != "" {
-		d.trackLink(link, email, sourceIP, isTCP)
+		d.trackLink(link, email, sourceIP, isTCP, dest)
 	}
 	return link, nil
 }
@@ -129,7 +133,7 @@ func (d *LimitDispatcher) DispatchLink(ctx context.Context, dest net.Destination
 	}
 
 	if email != "" {
-		d.trackLink(link, email, sourceIP, isTCP)
+		d.trackLink(link, email, sourceIP, isTCP, dest)
 	}
 	return d.innerDisp.DispatchLink(ctx, dest, link)
 }
@@ -156,10 +160,12 @@ func (d *LimitDispatcher) identifyAndCheck(ctx context.Context, dest net.Destina
 // trackLink records connection lifecycle without mutating xray-core owned
 // transport primitives. This keeps mux/XUDP compatible while still allowing
 // the dispatcher to release device-limit state when the link closes.
-func (d *LimitDispatcher) trackLink(link *transport.Link, email, sourceIP string, isTCP bool) {
+func (d *LimitDispatcher) trackLink(link *transport.Link, email, sourceIP string, isTCP bool, dest net.Destination) {
 	d.connCount.Add(1)
 
+	site := d.openSite(email, dest)
 	onClose := func() {
+		site.Close()
 		if isTCP {
 			d.delConn(email, sourceIP)
 		}
@@ -170,6 +176,21 @@ func (d *LimitDispatcher) trackLink(link *transport.Link, email, sourceIP string
 		Writer:  link.Writer,
 		onClose: onClose,
 	}
+}
+
+func (d *LimitDispatcher) openSite(email string, dest net.Destination) *sitestats.Counter {
+	stats := globalSiteStats.Load()
+	if stats == nil {
+		return nil
+	}
+	d.mu.RLock()
+	uid := d.emailToUID[email]
+	d.mu.RUnlock()
+	host := ""
+	if dest.Address != nil && dest.Address.Family().IsDomain() {
+		host = dest.Address.Domain()
+	}
+	return stats.Open(uid, host)
 }
 
 // ─── features.Feature (delegated) ───────────────────────────────────────────
